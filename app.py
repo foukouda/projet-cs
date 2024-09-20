@@ -1,11 +1,24 @@
 # app.py
-from flask import Flask, render_template
+from flask import Flask, render_template, request, redirect, url_for
 import os
 import numpy as np
+from numpy import trapz
 import pandas as pd
 import matplotlib.pyplot as plt
+import plotly
+import plotly.express as px
+import json
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+
+# Configuration pour l'upload
+app.config['UPLOAD_FOLDER'] = 'data'
+app.config['ALLOWED_EXTENSIONS'] = {'csv'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 # Fonction pour charger et nettoyer les données
 def load_and_clean_data(file_path, delimiter='\t', decimal=','):
@@ -22,9 +35,8 @@ def calculate_stiffness(df):
     stiffness = np.polyfit(elastic_region['Déplacement'], elastic_region['Force'], 1)[0]
     return stiffness
 
-# Fonction pour calculer l'énergie absorbée
-def calculate_energy_absorbed(df, displacement_col='Déplacement', force_col='Force'):
-    energy_absorbed = np.trapz(df[force_col], df[displacement_col])
+def calculate_energy_absorbed(df):
+    energy_absorbed = trapz(df['Force'], df['Déplacement'])
     return energy_absorbed
 
 def find_rupture_point(df):
@@ -58,36 +70,28 @@ def generate_plots():
     kevlar_cv2_energy_absorbed = calculate_energy_absorbed(df_kevlar_cv2)
     kevlar_cv2_max_force, kevlar_cv2_rupture_displacement = find_rupture_point(df_kevlar_cv2)
 
-    # Générer les graphiques
-    if not os.path.exists('static/images'):
-        os.makedirs('static/images')
+    # Graphique pour le Carbone avec couleur personnalisée
+    fig_carbone = px.line(df_carbone, x='Déplacement', y='Force', title='Carbone', color_discrete_sequence=['#e74c3c'])
+    graphJSON_carbone = json.dumps(fig_carbone, cls=plotly.utils.PlotlyJSONEncoder)
 
-    plt.figure()
-    plt.plot(df_carbone['Déplacement'], df_carbone['Force'], label='Carbone')
-    plt.xlabel('Déplacement (mm)')
-    plt.ylabel('Force (kN)')
-    plt.title('Courbe Force-Déplacement pour le Carbone')
-    plt.legend()
-    plt.savefig('static/images/carbone.png')
-    plt.close()
+    # Graphique pour le Kevlar
+    fig_kevlar = px.line(df_kevlar, x='Déplacement', y='Force', title='Kevlar', color_discrete_sequence=['#3498db'])
+    graphJSON_kevlar = json.dumps(fig_kevlar, cls=plotly.utils.PlotlyJSONEncoder)
 
-    plt.figure()
-    plt.plot(df_kevlar['Déplacement'], df_kevlar['Force'], label='Kevlar', color='orange')
-    plt.xlabel('Déplacement (mm)')
-    plt.ylabel('Force (kN)')
-    plt.title('Courbe Force-Déplacement pour le Kevlar')
-    plt.legend()
-    plt.savefig('static/images/kevlar.png')
-    plt.close()
+    # Graphique pour le Kevlar CV2
+    fig_kevlar_cv2 = px.line(df_kevlar_cv2, x='Déplacement', y='Force', title='Kevlar CV2', color_discrete_sequence=['#2ecc71'])
+    graphJSON_kevlar_cv2 = json.dumps(fig_kevlar_cv2, cls=plotly.utils.PlotlyJSONEncoder)
 
-    plt.figure()
-    plt.plot(df_kevlar_cv2['Déplacement'], df_kevlar_cv2['Force'], label='Kevlar CV2', color='green')
-    plt.xlabel('Déplacement (mm)')
-    plt.ylabel('Force (kN)')
-    plt.title('Courbe Force-Déplacement pour le Kevlar CV2')
-    plt.legend()
-    plt.savefig('static/images/kevlar_cv2.png')
-    plt.close()
+
+    # Générer les graphiques interactifs avec Plotly
+    fig_carbone = px.line(df_carbone, x='Déplacement', y='Force', title='Carbone')
+    graphJSON_carbone = json.dumps(fig_carbone, cls=plotly.utils.PlotlyJSONEncoder)
+
+    fig_kevlar = px.line(df_kevlar, x='Déplacement', y='Force', title='Kevlar')
+    graphJSON_kevlar = json.dumps(fig_kevlar, cls=plotly.utils.PlotlyJSONEncoder)
+
+    fig_kevlar_cv2 = px.line(df_kevlar_cv2, x='Déplacement', y='Force', title='Kevlar CV2')
+    graphJSON_kevlar_cv2 = json.dumps(fig_kevlar_cv2, cls=plotly.utils.PlotlyJSONEncoder)
 
     # Résultats sous forme de DataFrame
     results = {
@@ -99,13 +103,28 @@ def generate_plots():
     }
 
     results_df = pd.DataFrame(results)
-    return results_df
+    return results_df, graphJSON_carbone, graphJSON_kevlar, graphJSON_kevlar_cv2
 
-@app.route('/')
+@app.route('/', methods=['GET', 'POST'])
 def index():
-    results_df = generate_plots()
-    results_html = results_df.to_html(classes='table table-striped', index=False)
-    return render_template('index.html', tables=[results_html])
+    if request.method == 'POST':
+        # Vérifier si le fichier est présent dans la requête
+        if 'file' not in request.files:
+            return 'Aucun fichier sélectionné'
+        file = request.files['file']
+        if file.filename == '':
+            return 'Aucun fichier sélectionné'
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+            # Traiter le fichier téléchargé si nécessaire
+            return redirect(url_for('index'))
+    results_df, graphJSON_carbone, graphJSON_kevlar, graphJSON_kevlar_cv2 = generate_plots()
+    results_html = results_df.to_html(classes='table table-striped table-bordered', index=False)
+    return render_template('index.html', tables=[results_html],
+                           graphJSON_carbone=graphJSON_carbone,
+                           graphJSON_kevlar=graphJSON_kevlar,
+                           graphJSON_kevlar_cv2=graphJSON_kevlar_cv2)
 
 if __name__ == '__main__':
     app.run(debug=True)
